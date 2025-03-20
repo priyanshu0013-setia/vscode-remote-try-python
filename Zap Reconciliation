@@ -1,0 +1,81 @@
+import pandas as pd
+import pdfplumber
+import streamlit as st
+
+def extract_table_from_pdf(pdf_file):
+    """Extracts table data from a PDF and returns a DataFrame."""
+    tables = []
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            extracted_tables = page.extract_table()
+            if extracted_tables:
+                tables.extend(extracted_tables)
+    
+    if tables:
+        df = pd.DataFrame(tables)
+        df.columns = df.iloc[0]  # Set first row as header
+        df = df[1:]  # Remove the header row from data
+        df = df.reset_index(drop=True)
+        return df
+    return None
+
+def reconcile_data(vendor_df, sap_df):
+    """Reconciles Vendor and SAP DataFrames and returns a comparison report."""
+    # Convert common columns to lowercase for consistency
+    vendor_df.columns = vendor_df.columns.str.lower()
+    sap_df.columns = sap_df.columns.str.lower()
+
+    # Identify key columns for reconciliation (Assuming Invoice Number is common)
+    common_column = "invoice_number"  # Change as per your data structure
+    
+    if common_column not in vendor_df.columns or common_column not in sap_df.columns:
+        return None, "Missing Invoice Number column in one of the files."
+
+    # Merge data on Invoice Number
+    merged_df = pd.merge(vendor_df, sap_df, on=common_column, how="outer", indicator=True)
+
+    # Identify mismatches
+    mismatched_records = merged_df[merged_df["_merge"] != "both"]
+    
+    # Drop the '_merge' column
+    merged_df.drop(columns=["_merge"], inplace=True)
+
+    return merged_df, mismatched_records
+
+def process_files(vendor_pdf, sap_pdf):
+    """Handles the full reconciliation process."""
+    vendor_df = extract_table_from_pdf(vendor_pdf)
+    sap_df = extract_table_from_pdf(sap_pdf)
+
+    if vendor_df is None or sap_df is None:
+        return None, "Could not extract data from PDFs."
+
+    reconciled_data, mismatches = reconcile_data(vendor_df, sap_df)
+
+    if reconciled_data is None:
+        return None, "Reconciliation failed due to missing key columns."
+
+    # Save to Excel
+    output_file = "Reconciliation_Report.xlsx"
+    with pd.ExcelWriter(output_file) as writer:
+        reconciled_data.to_excel(writer, sheet_name="Reconciled Data", index=False)
+        mismatches.to_excel(writer, sheet_name="Mismatches", index=False)
+
+    return output_file, None
+
+# Streamlit UI for User Interaction
+st.title("Vendor vs SAP Data Reconciliation")
+
+vendor_file = st.file_uploader("Upload Vendor PDF", type=["pdf"])
+sap_file = st.file_uploader("Upload SAP PDF", type=["pdf"])
+
+if st.button("Compile"):
+    if vendor_file and sap_file:
+        result_file, error = process_files(vendor_file, sap_file)
+        if error:
+            st.error(error)
+        else:
+            st.success("Reconciliation completed successfully!")
+            st.download_button("Download Report", open(result_file, "rb"), file_name="Reconciliation_Report.xlsx")
+    else:
+        st.error("Please upload both Vendor and SAP PDF files.")
